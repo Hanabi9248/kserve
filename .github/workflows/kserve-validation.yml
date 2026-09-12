@@ -1,0 +1,46 @@
+name: Validate model readiness timeout
+on:
+  push:
+    branches: [codex/validate-model-readiness]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: e645042d49b098a051f05e81693725d6ff80db31
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Verify exact contribution tree
+        run: test "$(git rev-parse HEAD^{tree})" = e943f9928ec4776eb75096d395355607bad6b3d5
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgpgme-dev libbtrfs-dev build-essential pkg-config libassuan-dev libgpg-error-dev
+          python -m pip install -e ./python/kserve pytest pytest-asyncio pytest-httpx
+      - name: Reproduce original failures
+        shell: bash
+        run: |
+          file=python/kserve/kserve/api/kserve_client.py
+          git show 52c044a7e75cb1a208e476979c9ac2e4f03b0b82:$file > "$file"
+          set +e
+          (cd python && python -m pytest kserve/test/test_model_readiness_timeout.py -q) > /tmp/before.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/before.log
+          test "$result" -ne 0
+          grep 'FAILED.*test_readiness_uses_remaining_request_budget' /tmp/before.log
+          grep 'FAILED.*test_readiness_handles_request_timeout' /tmp/before.log
+          git restore "$file"
+      - name: SDK client tests
+        run: cd python && python -m pytest kserve/test/test_model_readiness_timeout.py kserve/test/test_inference_service_client.py -q
+      - name: Required precommit checks
+        run: make check
